@@ -1,9 +1,6 @@
-# Ysker-文件校验（Ysker-Hash-Verification）　v1.0
+# Ysker-文件校验（Ysker-Hash-Verification）
 
-> **中文名**：Ysker-文件校验　**英文名**：Ysker-Hash-Verification
-> 界面内一律显示中文名；英文名用于仓库名、文档与程序集元数据（文件属性里可见）。
-
-一个纯 AI 制作、简约到简陋的哈希值校验工具 —— UI 界面没啥设计，但该有的应该都有了。
+一个纯 AI 制作、简约到简陋的哈希值校验工具 —— UI 界面没啥设计跟抽卡似的，但该有功能的应该都有了。
 
 一个面向 Windows 的**批量文件校验小工具**：把文件拖进来，一次性算出
 **MD5 / SHA1 / CRC32 / SHA-256**，可以互相对比、查重、把结果复制或导出。
@@ -11,13 +8,7 @@
 单个 exe、免安装、免联网、**不读写任何配置文件**（纯绿色便携）。
 技术：C# WinForms，只用 .NET 4.0 API（装有 .NET 4.x 的 Win7 SP1+ 可运行）。
 
-> 开源协议：MIT ｜ 作者：Yuesekaer ｜ 界面语言：简体中文
-
 真机截图：
-
-![真机截图](preview/screenshot-01.png)
-
-设计预览（与真机共用同一套渲染内核）：
 
 ![整体界面](preview/preview-01-all.png)
 
@@ -202,4 +193,4 @@ Ysker-文件校验  导出时间：2026-10-12 20:39:59
 
 [MIT](LICENSE) © 2026 Yuesekaer
 
-如果这个小工具帮到了你，欢迎点个 Star ⭐；有问题可以直接提 Issue。
+> 开源协议：MIT ｜ 作者：Yuesekaer ｜ 界面语言：简体中文
