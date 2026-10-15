@@ -1,0 +1,14 @@
+# 统一换行与文本/二进制判定
+# 仓库内存 LF，Windows 检出为 CRLF（本项目只面向 Windows）
+* text=auto
+
+*.cs    text eol=crlf
+*.ps1   text eol=crlf
+*.md    text eol=crlf
+LICENSE text eol=crlf
+*.csproj text eol=crlf
+
+# 二进制资源，不做任何换行转换
+*.ico   binary
+*.png   binary
+*.exe   binary

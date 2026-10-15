@@ -1,0 +1,28 @@
+# ---- 说明 ----
+# 本仓库**故意入库**了编译好的 dist/YSKER-MD5.exe（方便直接下载使用），
+# 因此这里不忽略 dist/*.exe，只忽略构建与自检过程中产生的临时文件。
+
+# 构建 / 自检产生的临时文件
+dist/t.exe
+dist/selftest.txt
+dist/*.pdb
+
+# 自检与演示产生的临时目录
+diag/
+diag*/
+demoout/
+_demo_files/
+*.tmp
+*.log
+
+# 编辑器 / IDE
+.vs/
+.idea/
+*.user
+*.suo
+*.DotSettings.user
+*.sln.docstates
+
+# 系统
+Thumbs.db
+desktop.ini
