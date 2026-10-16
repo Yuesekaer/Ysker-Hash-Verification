@@ -34,7 +34,7 @@ namespace Ysker
         public const string Title = "Ysker-文件校验";
         /// <summary>英文名（仅用于文档与程序集元数据；界面内一律显示中文名）</summary>
         public const string TitleEn = "Ysker-Hash-Verification";
-        public const string Version = "v1.0";
+        public const string Version = "v1.0.1";
         /// <summary>程序图标文件名（与 exe 同目录；不在源码里写死任何绝对路径）</summary>
         public const string IconFile = "MD5.ico";
         public const string HintNoneChecked = "  至少得选一个吧(｀・ω・´)  ";
@@ -307,9 +307,11 @@ namespace Ysker
         List<string> _flashKeys = new List<string>();
         readonly HashSet<FileItem> _flashing = new HashSet<FileItem>();
         readonly Timer _tick;
-        Rectangle _band;
+        Rectangle _band;                // 客户区坐标（画出来的那个框）
+        Rectangle _bandContent;         // **内容坐标**（随滚动一起走，用来判定选中）
         bool _banding;
-        Point _bandAnchor;
+        Point _bandAnchorContent;       // 锚点也用内容坐标：滚动时起点跟着内容移动
+        Point _bandLastClient;          // 最近一次鼠标客户区坐标（滚轮时用它重算终点）
         FileItem _hoverDel, _hoverCopy;
         // ---- 哈希值文本选择（框选模式关闭时可用）----
         FileItem _selItem;          // 正在划过的卡片
@@ -379,17 +381,15 @@ namespace Ysker
             r.BackColor = Pal.CardBg;
             r.ForeColor = Pal.Text;
             r.ImeMode = ImeMode.Disable;             // 不激活输入法（也就不会弹软键盘）
-            // 右键：只给"复制"（只读控件不给剪切/粘贴入口）
-            ContextMenuStrip cm = new ContextMenuStrip();
-            cm.BackColor = Pal.PanelBg;
-            cm.ForeColor = Pal.Text;
-            ToolStripMenuItem miCopy = new ToolStripMenuItem("复制");
-            miCopy.ForeColor = Pal.Text;
-            miCopy.Click += delegate (object s2, EventArgs e2)
+            // 右键：只给"复制"（只读控件不给剪切/粘贴入口）。
+            // 必须用与主菜单相同的深色渲染器，否则会退回系统默认样式
+            //（默认态多出一个白色方块，按下变白底 + 蓝色选中框）。
+            Font menuFont = Renderer != null && Renderer.F != null ? Renderer.F.Ui : null;
+            ContextMenuStrip cm = DarkMenu.New(menuFont);
+            cm.Items.Add(DarkMenu.Item("复制", delegate (object s2, EventArgs e2)
             {
                 if (r.SelectionLength > 0 && SelectionCopied != null) SelectionCopied(r.SelectedText);
-            };
-            cm.Items.Add(miCopy);
+            }));
             r.ContextMenuStrip = cm;
             // 只读文本层里的滚轮要转发给列表面板（这样仍然可以滚动/触摸滑动查看）
             r.MouseWheel += delegate (object s, MouseEventArgs e)
@@ -461,11 +461,69 @@ namespace Ysker
             if (next == cur) return;
             AutoScrollPosition = new Point(0, next);
             _rectsValid = false;
+            // 正在框选时，滚动会让"内容里的锚点"相对屏幕移动：
+            // 起点要跟着内容走，终点跟着鼠标（屏幕位置不变但内容位置变了），
+            // 所以必须立刻按新的滚动偏移重算选框与选中结果。
+            if (_banding) { RebuildBand(_bandLastClient); return; }
             Invalidate();
         }
 
         /// <summary>当前滚动位置（自检用）</summary>
         public int ScrollYPublic { get { return -AutoScrollPosition.Y; } }
+
+        // ---- 自检用：框选拖拽的可编程入口 ----
+        /// <summary>自检用：等价于在 clientPt 处按下左键开始框选</summary>
+        public void DebugBandStartPublic(Point clientPt)
+        {
+            _banding = true;
+            _bandAnchorContent = new Point(clientPt.X + AutoScrollPosition.X, clientPt.Y - AutoScrollPosition.Y);
+            _bandLastClient = clientPt;
+            _band = new Rectangle(clientPt.X, clientPt.Y, 1, 1);
+            _bandContent = new Rectangle(_bandAnchorContent.X, _bandAnchorContent.Y, 1, 1);
+            SyncHosts();
+            Invalidate();
+        }
+        /// <summary>自检用：等价于拖到 clientPt</summary>
+        public void DebugBandMovePublic(Point clientPt) { RebuildBand(clientPt); }
+        /// <summary>自检用：等价于松开左键</summary>
+        public void DebugBandEndPublic() { _banding = false; SyncHosts(); Invalidate(); }
+        /// <summary>自检用：当前选框（客户区）</summary>
+        public Rectangle BandClientPublic { get { return _band; } }
+        /// <summary>自检用：当前选框（内容坐标）</summary>
+        public Rectangle BandContentPublic { get { return _bandContent; } }
+        /// <summary>自检用：是否正在框选</summary>
+        public bool BandingPublic { get { return _banding; } }
+
+        /// <summary>
+        /// 按"内容坐标里的锚点 + 当前鼠标位置"重建选框，并同步选中结果。
+        /// 用内容坐标的理由：滚动时内容会移动，锚点必须跟着内容走，
+        /// 否则起点会被钉在屏幕上，选框范围与卡片实际位置错位。
+        /// 滚轮滚动时只要再调用一次本函数即可。
+        /// </summary>
+        void RebuildBand(Point clientPt)
+        {
+            _bandLastClient = clientPt;
+            EnsureRects();
+            // 客户区 -> 内容坐标（ContentToClient 的逆运算）
+            Point cur = new Point(clientPt.X + AutoScrollPosition.X, clientPt.Y - AutoScrollPosition.Y);
+            int x = Math.Min(_bandAnchorContent.X, cur.X);
+            int y = Math.Min(_bandAnchorContent.Y, cur.Y);
+            _bandContent = new Rectangle(x, y,
+                Math.Abs(cur.X - _bandAnchorContent.X) + 1,
+                Math.Abs(cur.Y - _bandAnchorContent.Y) + 1);
+            _band = ContentToClient(_bandContent);
+
+            if (!BoxMode) Selected.Clear();
+            for (int i = 0; i < _rects.Count && i < DisplayRows.Count; i++)
+            {
+                if (DisplayRows[i] is DividerItem) continue;
+                if (_rects[i].IntersectsWith(_bandContent))
+                    Selected.Add(((FileItem)DisplayRows[i]).Path);
+            }
+            _views.Clear();
+            if (SelectionChanged != null) SelectionChanged();
+            Invalidate();
+        }
 
         /// <summary>控件是否仍然可用（消息过滤器可能在全应用范围内被调用）</summary>
         static bool Alive(Control c) { return c != null && !c.IsDisposed && !c.Disposing; }
@@ -497,7 +555,11 @@ namespace Ysker
         {
             try
             {
-                if (Renderer == null || !UseValueHost || Busy || LineCount <= 0 || VisibleKeys.Count == 0)
+                // 框选拖拽期间必须隐藏只读文本层：子控件永远画在父控件之上，
+                // 否则哈希值会把选框盖住（选框看起来被截断）。此时由面板自己画哈希值，
+                // 并把选框画在最上层。
+                if (Renderer == null || !UseValueHost || Busy || LineCount <= 0 ||
+                    VisibleKeys.Count == 0 || _banding)
                 {
                     for (int k = 0; k < _hosts.Count; k++) _hosts[k].Visible = false;
                     return;
@@ -748,6 +810,9 @@ namespace Ysker
 
         public int HostCountPublic { get { return _hosts.Count; } }
         public RichTextBox HostPublic(int i) { return i < _hosts.Count ? _hosts[i] : null; }
+        /// <summary>自检用：某个文本层的右键菜单</summary>
+        public ContextMenuStrip HostMenuPublic(int i)
+        { RichTextBox h = HostPublic(i); return h == null ? null : h.ContextMenuStrip; }
 
         /// <summary>
         /// 生成只读文本层的文本：把每行的键补齐到与面板一致的列宽（保证所有"："对齐），
@@ -1427,8 +1492,11 @@ namespace Ysker
                 else
                 {
                     _banding = true;
-                    _bandAnchor = new Point(e.X, e.Y);
+                    // 锚点存**内容坐标**：滚动时它会跟着内容一起移动
+                    _bandAnchorContent = new Point(e.X + AutoScrollPosition.X, e.Y - AutoScrollPosition.Y);
+                    _bandLastClient = new Point(e.X, e.Y);
                     _band = new Rectangle(e.X, e.Y, 1, 1);
+                    _bandContent = new Rectangle(_bandAnchorContent.X, _bandAnchorContent.Y, 1, 1);
                     if (!BoxMode) Selected.Clear();
                     Focus();
                     AfterSelectionChanged();
@@ -1470,19 +1538,8 @@ namespace Ysker
 
             if (_banding)
             {
-                _band = new Rectangle(Math.Min(_bandAnchor.X, e.X), Math.Min(_bandAnchor.Y, e.Y),
-                                      Math.Abs(e.X - _bandAnchor.X) + 1, Math.Abs(e.Y - _bandAnchor.Y) + 1);
-                EnsureRects();
-                if (!BoxMode) Selected.Clear();
-                for (int i = 0; i < _rects.Count; i++)
-                {
-                    if (DisplayRows[i] is DividerItem) continue;
-                    if (ContentToClient(_rects[i]).IntersectsWith(_band))
-                        Selected.Add(((FileItem)DisplayRows[i]).Path);
-                }
-                _views.Clear();
-                if (SelectionChanged != null) SelectionChanged();
-                Invalidate();
+                RebuildBand(e.Location);
+                return;
             }
             else
             {
@@ -1537,7 +1594,8 @@ namespace Ysker
             if (_banding)
             {
                 _banding = false;
-                if (!BoxMode && _band.Width < 4 && _band.Height < 4) { Selected.Clear(); AfterSelectionChanged(); }
+                // 只是点了一下没拖动 => 清掉选中（内容坐标判定，与滚动无关）
+                if (!BoxMode && _bandContent.Width < 4 && _bandContent.Height < 4) { Selected.Clear(); AfterSelectionChanged(); }
                 Invalidate();
             }
             base.OnMouseUp(e);
@@ -1862,6 +1920,60 @@ namespace Ysker
 
     #endregion
 
+    #region 深色右键菜单渲染（应用菜单与卡片内菜单共用，保证样式完全一致）
+
+    /// <summary>
+    /// 深色右键菜单渲染器。任何右键菜单都必须套这一个，
+    /// 否则会退回系统默认样式（按下变白底 + 蓝色选中框、还会多出白色的图标/勾选留白）。
+    /// </summary>
+    internal sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
+    {
+        public DarkMenuRenderer() : base(new DarkColors()) { }
+    }
+
+    internal sealed class DarkColors : ProfessionalColorTable
+    {
+        public override Color MenuItemSelected { get { return Pal.Btn; } }
+        public override Color MenuItemBorder { get { return Pal.Btn; } }
+        public override Color ToolStripDropDownBackground { get { return Pal.PanelBg; } }
+        public override Color ImageMarginGradientBegin { get { return Pal.PanelBg; } }
+        public override Color ImageMarginGradientMiddle { get { return Pal.PanelBg; } }
+        public override Color ImageMarginGradientEnd { get { return Pal.PanelBg; } }
+        public override Color SeparatorDark { get { return Pal.Border; } }
+        public override Color SeparatorLight { get { return Pal.Border; } }
+        public override Color MenuItemPressedGradientBegin { get { return Pal.Btn; } }
+        public override Color MenuItemPressedGradientMiddle { get { return Pal.Btn; } }
+        public override Color MenuItemPressedGradientEnd { get { return Pal.Btn; } }
+        public override Color MenuBorder { get { return Pal.Border; } }
+    }
+
+    /// <summary>统一构造深色右键菜单：背景、字体、渲染器一次配好</summary>
+    internal static class DarkMenu
+    {
+        public static ContextMenuStrip New(Font font)
+        {
+            ContextMenuStrip m = new ContextMenuStrip();
+            if (font != null) m.Font = font;
+            m.BackColor = Pal.PanelBg;
+            m.ForeColor = Pal.Text;
+            m.Renderer = new DarkMenuRenderer();
+            // 不设 ShowImageMargin：与主菜单保持完全一致的左侧留白，
+            // 避免"卡片菜单"和"其它菜单"看起来有细微差别。
+            return m;
+        }
+
+        public static ToolStripMenuItem Item(string text, EventHandler onClick)
+        {
+            ToolStripMenuItem it = new ToolStripMenuItem(text);
+            it.ForeColor = Pal.Text;
+            it.BackColor = Pal.PanelBg;
+            if (onClick != null) it.Click += onClick;
+            return it;
+        }
+    }
+
+    #endregion
+
     #region 主窗口
 
     internal sealed class MainForm : Form
@@ -2176,6 +2288,9 @@ namespace Ysker
 
         /// <summary>自检用：侧栏内层容器（找小技巧 / 署名行）</summary>
         public Control SideInnerPublic { get { return _sideInner; } }
+
+        /// <summary>自检用：侧栏「框选」开关</summary>
+        public SwitchButton BoxSelPublic { get { return _boxSelSide; } }
 
         /// <summary>自检用：同文件分类开关</summary>
         public SwitchButton GroupSamePublic { get { return _groupSame; } }
@@ -2603,6 +2718,10 @@ namespace Ysker
         {
             bool on = _boxSelSide != null && _boxSelSide.Checked;
             _panel.BoxMode = on;
+            // 框选开启时关闭只读文本层：此时点击用于选卡片，
+            // 而且子控件会盖住选框（必须有，否则选框会被哈希值截断）。
+            _panel.UseValueHost = !on;
+            _panel.SyncHostsPublic();
             if (on) _panel.ClearSelPublic();
             if (on)
             {
@@ -2709,23 +2828,6 @@ namespace Ysker
             Keys body = k & ~(Keys.Control | Keys.Shift | Keys.Alt);
             s += (body == Keys.Delete) ? "Delete" : body.ToString();
             return s;
-        }
-
-        sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
-        {
-            public DarkMenuRenderer() : base(new DarkColors()) { }
-        }
-
-        sealed class DarkColors : ProfessionalColorTable
-        {
-            public override Color MenuItemSelected { get { return Pal.Btn; } }
-            public override Color MenuItemBorder { get { return Pal.Btn; } }
-            public override Color ToolStripDropDownBackground { get { return Pal.PanelBg; } }
-            public override Color ImageMarginGradientBegin { get { return Pal.PanelBg; } }
-            public override Color ImageMarginGradientMiddle { get { return Pal.PanelBg; } }
-            public override Color ImageMarginGradientEnd { get { return Pal.PanelBg; } }
-            public override Color SeparatorDark { get { return Pal.Border; } }
-            public override Color SeparatorLight { get { return Pal.Border; } }
         }
 
         #endregion
@@ -4671,6 +4773,175 @@ namespace Ysker
                         fitted2.Length < (busyHead + busyName).Length);
                     log.AppendLine("      1000 宽下实际显示：" + fitted2);
                     f.ClientSize = new Size(1240, 740); f.LayoutShell();
+                    // ---- 回归：框选模式下必须关闭只读文本层（否则子控件会盖住选框）----
+                    bool b0 = f.PanelPublic.BoxMode, v0 = f.PanelPublic.UseValueHost;
+                    f.BoxSelPublic.PerformClick();           // 打开框选
+                    bool boxOn = f.PanelPublic.BoxMode && !f.PanelPublic.UseValueHost;
+                    f.BoxSelPublic.PerformClick();           // 再关掉
+                    bool boxOff = !f.PanelPublic.BoxMode && f.PanelPublic.UseValueHost;
+                    ok &= Note(log, "开框选时关闭只读文本层、关框选时恢复（初始 BoxMode=" + b0 + " UseValueHost=" + v0 + "）",
+                        boxOn && boxOff);
+
+                    // ---- 回归：框选拖拽期间文本层必须隐藏，选框才能画在最上层 ----
+                    FilePanel fp5 = new FilePanel();
+                    fp5.Renderer = new CardRenderer(new UiFonts(10.5f, 10f), 84);
+                    fp5.Size = new Size(900, 360);
+                    fp5.VisibleKeys = new List<string>(new string[] { Algo.MD5 });
+                    fp5.LineCount = 1;
+                    for (int i5 = 0; i5 < 30; i5++)
+                    {
+                        FileItem fx5 = new FileItem();
+                        fx5.Path = @"C:\t\band" + i5.ToString("00") + ".bin";
+                        fx5.Size = 1024; fx5.Computed = true;
+                        fx5.Hashes[Algo.MD5] = "0123456789abcdef0123456789abcdef";
+                        fp5.Files.Add(fx5); fp5.DisplayRows.Add(fx5);
+                    }
+                    fp5.UseValueHost = true;
+                    fp5.Reflow();
+                    fp5.SyncHostsPublic();
+                    bool hostVisibleBefore = false;
+                    for (int hi5 = 0; hi5 < fp5.HostCountPublic; hi5++)
+                    { RichTextBox hh5 = fp5.HostPublic(hi5); if (hh5 != null && hh5.Visible) hostVisibleBefore = true; }
+                    fp5.DebugBandStartPublic(new Point(50, 60));
+                    bool hostHiddenDuring = true;
+                    for (int hi5 = 0; hi5 < fp5.HostCountPublic; hi5++)
+                    { RichTextBox hh5 = fp5.HostPublic(hi5); if (hh5 != null && hh5.Visible) hostHiddenDuring = false; }
+                    ok &= Note(log, "框选拖拽期间文本层全部隐藏（开始前有可见=" + hostVisibleBefore + "）",
+                        hostVisibleBefore && hostHiddenDuring && fp5.BandingPublic);
+                    fp5.DebugBandEndPublic();
+                    bool hostBackAfter = false;
+                    for (int hi5 = 0; hi5 < fp5.HostCountPublic; hi5++)
+                    { RichTextBox hh5 = fp5.HostPublic(hi5); if (hh5 != null && hh5.Visible) hostBackAfter = true; }
+                    ok &= Note(log, "松开后文本层恢复显示", hostBackAfter);
+
+                    // ---- 回归：框选时滚动，锚点随内容移动、终点随鼠标，选框长度随之变化 ----
+                    // 说明：AutoScrollPosition 只有在控件真实创建（有句柄）后才生效，
+                    // 所以这里把面板放进一个屏幕外的隐藏窗体里跑。
+                    using (Form tmp = new Form())
+                    {
+                        tmp.FormBorderStyle = FormBorderStyle.None;
+                        tmp.StartPosition = FormStartPosition.Manual;
+                        tmp.Location = new Point(-4000, -4000);
+                        tmp.ClientSize = new Size(920, 380);
+                        tmp.Controls.Add(fp5);
+                        fp5.Location = new Point(0, 0);
+                        fp5.Size = new Size(900, 360);
+                        fp5.Reflow();
+                        tmp.Show();
+                        Application.DoEvents();
+
+                        int scr0 = fp5.ScrollYPublic;
+                        fp5.DebugBandStartPublic(new Point(50, 60));       // 锚点在内容坐标 (50,60)
+                        fp5.DebugBandMovePublic(new Point(300, 300));      // 终点拖到 (300,300)
+                        Rectangle b1 = fp5.BandClientPublic;
+                        Rectangle c1 = fp5.BandContentPublic;
+                        int sel1 = fp5.Selected.Count;
+                        fp5.WheelScrollPublic(-120);                       // 向下滚 48px
+                        int scr1 = fp5.ScrollYPublic;
+                        Rectangle b2 = fp5.BandClientPublic;
+                        Rectangle c2 = fp5.BandContentPublic;
+                        log.AppendLine("      框选滚动：滚动量 " + scr0 + " -> " + scr1 +
+                                       "  选框 " + b1 + " -> " + b2 + "  内容框 " + c1 + " -> " + c2 +
+                                       "  选中 " + sel1 + " -> " + fp5.Selected.Count);
+                        ok &= Note(log, "框选拖拽中滚轮能滚动（" + scr0 + " -> " + scr1 + "）", scr1 == scr0 + 48);
+                        ok &= Note(log, "滚动后：选框上边随内容上移（" + b1.Top + " -> " + b2.Top + "）",
+                            b2.Top == b1.Top - 48);
+                        ok &= Note(log, "滚动后：选框下边保持不动（" + b1.Bottom + " -> " + b2.Bottom + "）",
+                            Math.Abs(b2.Bottom - b1.Bottom) <= 1);
+                        ok &= Note(log, "滚动后：选框长度相应变长（" + b1.Height + " -> " + b2.Height + "）",
+                            b2.Height == b1.Height + 48);
+                        ok &= Note(log, "滚动后：内容坐标里的锚点不变（" + c1.Top + " -> " + c2.Top + "），覆盖区随内容变化",
+                            c2.Top == c1.Top && c2.Bottom == c1.Bottom + 48);
+                        fp5.DebugBandEndPublic();
+                        tmp.Hide();
+                    }
+                    fp5.Dispose();
+                    // ---- 回归：卡片内右键菜单必须与主菜单同样式（深色渲染器）----
+                    // 注意：宿主菜单是在"创建文本层"时生成的，所以这里造一个有文件的面板
+                    // 并让它真正生成文本层，否则拿到的是 null。
+                    FilePanel fp6 = new FilePanel();
+                    fp6.Renderer = new CardRenderer(new UiFonts(10.5f, 10f), 84);
+                    fp6.Size = new Size(900, 300);
+                    fp6.VisibleKeys = new List<string>(new string[] { Algo.MD5 });
+                    fp6.LineCount = 1;
+                    FileItem fx6 = new FileItem();
+                    fx6.Path = @"C:\t\menu.bin"; fx6.Size = 100; fx6.Computed = true;
+                    fx6.Hashes[Algo.MD5] = "0123456789abcdef0123456789abcdef";
+                    fp6.Files.Add(fx6); fp6.DisplayRows.Add(fx6);
+                    fp6.UseValueHost = true;
+                    fp6.Reflow();
+                    fp6.SyncHostsPublic();
+                    ContextMenuStrip hm = fp6.HostMenuPublic(0);
+                    ContextMenuStrip am = f.ContextMenuStrip;
+                    bool menuOk = hm != null && am != null &&
+                                  hm.Renderer is DarkMenuRenderer && am.Renderer is DarkMenuRenderer &&
+                                  hm.BackColor == Pal.PanelBg && am.BackColor == Pal.PanelBg &&
+                                  hm.Items.Count == 1 && hm.Items[0].Text == "复制" &&
+                                  hm.Items[0].ForeColor == Pal.Text &&
+                                  hm.ShowImageMargin == am.ShowImageMargin &&
+                                  hm.Font != null && am.Font != null && hm.Font.Size == am.Font.Size;
+                    ok &= Note(log, "卡片内右键菜单与主菜单同样式（渲染器=" +
+                                    (hm == null ? "无" : hm.Renderer.GetType().Name) + " 项=" +
+                                    (hm == null ? "-" : hm.Items.Count + "个/" + hm.Items[0].Text) +
+                                    " 背景=" + (hm == null ? "-" : hm.BackColor.R.ToString()) +
+                                    " 留白一致=" + (hm != null && am != null && hm.ShowImageMargin == am.ShowImageMargin) + "）", menuOk);
+                    // 更强的一层：两个菜单的渲染配色表必须逐项相同（它直接决定画出来什么样）
+                    ProfessionalColorTable ctH = (hm != null && hm.Renderer is ToolStripProfessionalRenderer)
+                        ? ((ToolStripProfessionalRenderer)hm.Renderer).ColorTable : null;
+                    ProfessionalColorTable ctA = (am != null && am.Renderer is ToolStripProfessionalRenderer)
+                        ? ((ToolStripProfessionalRenderer)am.Renderer).ColorTable : null;
+                    bool ctOk = ctH != null && ctA != null &&
+                                ctH.MenuItemSelected == ctA.MenuItemSelected &&
+                                ctH.ToolStripDropDownBackground == ctA.ToolStripDropDownBackground &&
+                                ctH.ImageMarginGradientBegin == ctA.ImageMarginGradientBegin &&
+                                ctH.ImageMarginGradientMiddle == ctA.ImageMarginGradientMiddle &&
+                                ctH.ImageMarginGradientEnd == ctA.ImageMarginGradientEnd &&
+                                ctH.MenuBorder == ctA.MenuBorder &&
+                                ctH.MenuItemSelected == Pal.Btn &&
+                                ctH.ToolStripDropDownBackground == Pal.PanelBg &&
+                                ctH.ImageMarginGradientBegin == Pal.PanelBg;
+                    ok &= Note(log, "卡片菜单与主菜单配色表逐项一致，且选中色=按钮绿、背景=深色（" +
+                                    (ctH == null ? "无配色表" : "选中=" + ctH.MenuItemSelected.R + "," +
+                                     ctH.MenuItemSelected.G + "," + ctH.MenuItemSelected.B) + "）", ctOk);
+
+                    // 像素级验证：把菜单离屏渲染出来，检查"默认态无白块"与"按下态是绿底"
+                    if (hm != null)
+                    {
+                        try
+                        {
+                            hm.Show(new Point(-3000, -3000));
+                            Application.DoEvents();
+                            Bitmap bm1 = new Bitmap(hm.Width, hm.Height);
+                            hm.DrawToBitmap(bm1, new Rectangle(0, 0, hm.Width, hm.Height));
+                            Color bgPixel = bm1.GetPixel(Math.Max(1, hm.Width - 6), hm.Height / 2);
+                            hm.Items[0].Select();       // 模拟"悬停/按下"（Selected 属性只读，用 Select()）
+                            Application.DoEvents();
+                            Bitmap bm2 = new Bitmap(hm.Width, hm.Height);
+                            hm.DrawToBitmap(bm2, new Rectangle(0, 0, hm.Width, hm.Height));
+                            Color hotPixel = bm2.GetPixel(hm.Width / 2, hm.Height / 2);
+                            int whiteCount = 0;
+                            for (int px = 0; px < bm1.Width; px += 2)
+                                for (int py = 0; py < bm1.Height; py += 2)
+                                { Color cc = bm1.GetPixel(px, py); if (cc.R > 200 && cc.G > 200 && cc.B > 200) whiteCount++; }
+                            log.AppendLine("      菜单像素：默认态右缘=" + bgPixel.R + "," + bgPixel.G + "," + bgPixel.B +
+                                           "   按下态中心=" + hotPixel.R + "," + hotPixel.G + "," + hotPixel.B +
+                                           "   默认态白色采样点=" + whiteCount);
+                            ok &= Note(log, "默认态没有白色方块（右缘为深色）",
+                                bgPixel.R < 90 && bgPixel.G < 90 && bgPixel.B < 90);
+                            ok &= Note(log, "按下态是按钮绿而不是白底/蓝框（" + hotPixel.R + "," + hotPixel.G + "," + hotPixel.B + "）",
+                                hotPixel.G > hotPixel.R + 40 && hotPixel.G > hotPixel.B + 20);
+                            hm.Hide();
+                        }
+                        catch (Exception ex)
+                        {
+                            log.AppendLine("      菜单像素采样跳过：" + ex.GetType().Name + " " + ex.Message);
+                            try { hm.Hide(); } catch { }
+                        }
+                    }
+                    fp6.Dispose();
+                    // 主菜单的项也应是深色文字（用作对照，防止两边一起退化）
+                    bool amItemOk = am != null && am.Items.Count > 0 && am.Items[0].ForeColor == Pal.Text;
+                    ok &= Note(log, "主菜单项同为深色文字（对照）", amItemOk);
                     ok &= Note(log, "「同文件分类」默认关闭", f.GroupSamePublic != null && !f.GroupSamePublic.Checked);
                     ok &= Note(log, "「置于顶层」默认关闭", !f.TitleBarPublic.TopMostOn && !f.TopMost);
                     f.TitleBarPublic.ClickButtonPublic(3);
